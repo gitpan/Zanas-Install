@@ -1,4 +1,13 @@
+0.51: 
+
+	- sync_up documented;
+	- autmatic backup_local before each restore_local;
+	- support for snapshots/latest.tar.gz;
+	- autmatic backup_master_libs before each sync_up;
+	- restore_master_libs: support for snapshots/latest-libs.tar.gz;
+
 0.5: 09.03.04 
+
 	- fork from Zanas.pm;
 	- Term::ReadPassword support added;
 	- pods added;

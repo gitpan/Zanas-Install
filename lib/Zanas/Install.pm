@@ -10,11 +10,58 @@ use Data::Dumper;
 
 ################################################################################
 
+sub _cd {
+
+#print STDERR "_cd: \$ARGV[0] = $ARGV[0]\n";
+
+	$ARGV [0] =~ /^\[[\w\-]+\]$/ or return;
+	
+	my $appname = shift (@ARGV);
+	
+	$appname =~ s{\[}{};
+	$appname =~ s{\]}{};
+	
+	my $httpd = _local_exec ("which apache; which httpd");
+	
+	my $config_file_option =  _local_exec ("apache -V | grep SERVER_CONFIG_FILE");
+	
+	$config_file_option =~ /\=\"(.*?)\"/;
+	
+	my $config_file = $1;
+	
+	my $include_line = _local_exec ("cat /etc/apache/httpd.conf | grep $appname/conf/httpd.conf");
+	
+	$include_line = (split /\n/, $include_line) [0];
+	$include_line =~ s{Include}{};
+	$include_line =~ s{conf/httpd.conf}{};
+	$include_line =~ s{\"}{}g;
+	$include_line =~ s{\s}{}g;
+	
+#print STDERR "_cd: chdir $include_line\n";
+
+	chdir $include_line;
+
+	_local_exec ("pwd");
+
+}
+
+################################################################################
+
 sub _local_exec {
 
-print STDERR "[$_[0]]\n";
+	print STDERR " {$_[0]";
 
-	print `$_[0]`;
+	my $stdout = `$_[0]`;
+	
+	if ($_[0] !~ /cat / && $stdout =~ /./) {
+		$stdout =~ s{^}{  }gsm;
+		print STDERR "\n$stdout }\n";
+	}
+	else {
+		print STDERR "}\n";
+	}
+
+	return $stdout;
 	
 }
 
@@ -25,16 +72,13 @@ sub _master_exec {
 	my ($preconf, $cmd) = @_;
 	
 	my $ms = $preconf -> {master_server};
-	my $ex = $ms -> {host} eq 'localhost' ? $cmd : "ssh -l$$ms{user} $$ms{host} '$cmd'";
-
-print STDERR "[$ex]\n";
 	
-	my $stdout = `$ex`;
+	_local_exec (
+		$ms -> {host} eq 'localhost' ? 
+			$cmd : 
+			"ssh -l$$ms{user} $$ms{host} '$cmd'"
+	)
 	
-	print $stdout;
-
-	return $stdout;
-
 }
 
 ################################################################################
@@ -42,11 +86,11 @@ print STDERR "[$ex]\n";
 sub restore_local_libs {
 	my ($path) = @_;
 	$path ||= $ARGV [0];
-	print " Zanas::Install> Removing libs...\n";
+	_log ("Removing libs...");
 	_local_exec ("rm -rf lib/Content/*");
 	_local_exec ("rm -rf lib/Presentation/*");
-	print " Zanas::Install> Unpacking $path...\n";
-	_local_exec ("tar xzvf $path");
+	_log ("Unpacking $path...");
+	_local_exec ("tar xzfm $path");
 	_local_exec ("chmod -R a+rwx lib/*");
 }
 
@@ -59,15 +103,14 @@ sub restore_local_db {
 
 	my $local_preconf = _read_local_preconf ();
 	
-	print " Zanas::Install> Unzipping $path...\n";
+	_log ("Unzipping $path...");
 	_local_exec ("gunzip $path");
 	$path =~ s{\.gz$}{};
 	
-	print " Zanas::Install> Feeding $path to MySQL...\n";
-
+	_log ("Feeding $path to MySQL...");
 	_local_exec ("mysql -u$$local_preconf{db_user} -p$$local_preconf{db_password} $$local_preconf{db_name} < $path");
 
-	print " Zanas::Install> DB restore complete.\n";
+	_log ("DB restore complete.");
 	
 }
 
@@ -82,32 +125,30 @@ sub restore {
 sub restore_local {
 
 	my ($time) = @_;
-	$time ||= $ARGV [0];
-	
-#print STDERR "restore_local: \$time (1) = $time\n";
+	$time ||= $ARGV [0];	
+	$time ||= readlink 'snapshots/latest.tar.gz';
 
 	$time =~ s{snapshots\/}{};
 	$time =~ s{\.tar\.gz}{};
-
-#print STDERR "restore_local: \$time (2) = $time\n";
 	
+	backup_local ();
+
 	my $path = "snapshots/$time.tar.gz";
 	-f $path or die "File not found: $path\n";
 	_log ("Restoring $path on local server...");
 	_log ("Unpacking $path...");
-	_local_exec ("tar xzvf $path");
+	_local_exec ("tar xzfm $path");
 
 	$time =~ s{master_}{};
 
-#print STDERR "restore_local: \$time (3) = $time\n";
-
+	my $local_preconf = _read_local_preconf ();
 	my $local_conf = _read_local_conf ();
+
 	my $lib_path = 'lib/' . $local_conf -> {application_name} . '.' . $time . '.tar.gz';
 	restore_local_libs ($lib_path);
 	_log ("Removing $lib_path...");
 	_local_exec ("rm $lib_path");
 	
-	my $local_preconf = _read_local_preconf ();
 	my $db_path = 'sql/' . $local_preconf -> {db_name} . '.' . $time . '.sql.gz';
 	restore_local_db ($db_path);
 	$db_path =~ s{\.gz$}{};
@@ -167,7 +208,11 @@ sub backup_local {
 	my $path = _snapshot_path ($time);
 	
 	_log ("Creating $path...");
-	_local_exec ("tar czvf $path $db_path $libs_path");
+	_local_exec ("tar czf $path $db_path $libs_path");
+
+	_log ("Creating symlink snapshots/latest.tar.gz...");
+	_local_exec ("rm snapshots/latest.tar.gz*");
+	_local_exec ("ln -s $path snapshots/latest.tar.gz");
 	
 	_log ("Removing $db_path...");
 	_local_exec ("rm $db_path");
@@ -185,11 +230,10 @@ sub backup_local {
 sub sync_down {
 
 	my $snapshot_path = backup_master ();
-
-print STDERR "sync_down: \$snapshot_path = $snapshot_path\n";
 	
-	my $local_conf = _read_local_conf ();		
 	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();		
+
 	_log ("Copying $snapshot_path from master...");
 	_cp_from_master ($local_preconf, $local_preconf -> {master_server} -> {path} . '/' . $snapshot_path, 'snapshots/');
 	
@@ -203,19 +247,26 @@ print STDERR "sync_down: \$snapshot_path = $snapshot_path\n";
 
 sub _log {
 
-	print " $_[0]\n";
+	print "$_[0]\n";
 
 }
 
 ################################################################################
 
 sub sync_up {
-
+		
 	my $libs_path = backup_local_libs ();
 
-	my $local_conf = _read_local_conf ();		
 	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();		
+
 	my $master_path = $local_preconf -> {master_server} -> {path};
+
+	my $master_libs_path = backup_master_libs ();
+	$master_libs_path =~ s{$master_path\/}{};	
+
+	_log ("Removing $master_libs_path...");
+	_master_exec ($local_preconf, "cd $master_path; rm $master_libs_path");
 
 	_log ("Copying $libs_path to master...");
 	_cp_to_master ($local_preconf, $libs_path, $local_preconf -> {master_server} -> {path} . '/' . $libs_path);
@@ -224,7 +275,7 @@ sub sync_up {
 	_master_exec ($local_preconf, "cd $master_path; rm -rf libs/*");
 
 	_log ("Unpacking $libs on master...");
-	_master_exec ($local_preconf, "cd $master_path; tar xzvf $libs_path");
+	_master_exec ($local_preconf, "cd $master_path; tar xzfm $libs_path");
 
 	_log ("Removing $libs_path on master...");
 	_master_exec ($local_preconf, "cd $master_path; rm $libs_path");
@@ -274,8 +325,9 @@ sub backup_master {
 	$time ||= time;
 	_log ("Backing up application on master server...");
 	
-	my $local_conf = _read_local_conf ();	
 	my $local_preconf = _read_local_preconf ();	
+	my $local_conf = _read_local_conf ();	
+	
 	my $master_preconf = _read_master_preconf ();
 	my $master_path = $local_preconf -> {master_server} -> {path};
 	
@@ -289,7 +341,7 @@ sub backup_master {
 	$path =~ s{snapshots\/}{snapshots\/master_};
 	
 	_log ("Creating $path...");
-	_master_exec ($local_preconf, "cd $master_path; tar czvf $master_path/$path $db_path $libs_path");
+	_master_exec ($local_preconf, "cd $master_path; tar czf $master_path/$path $db_path $libs_path");
 	
 	_log ("Removing $db_path...");
 	_master_exec ($local_preconf, "cd $master_path; rm $db_path");
@@ -299,8 +351,6 @@ sub backup_master {
 	
 	_log ("Backup complete");
 	
-print STDERR "backup_master: \$path = $path\n";
-
 	return $path;
 	
 }
@@ -332,8 +382,10 @@ sub backup_master_db {
 
 	my ($time) = @_;
 	$time ||= time;	
-	my $local_conf = _read_local_conf ();	
+
 	my $local_preconf = _read_local_preconf ();	
+	my $local_conf = _read_local_conf ();	
+
 	my $master_preconf = _read_master_preconf ();	
 	my $path = $local_preconf -> {master_server} -> {path} . '/' . _db_path ($local_preconf -> {db_name}, $time);
 	_log ("Backing up db $$master_preconf{db_name} on master server...");
@@ -352,11 +404,14 @@ sub backup_local_libs {
 
 	my ($time) = @_;
 	$time ||= time;
+
+	my $local_preconf = _read_local_preconf ();	
 	my $local_conf = _read_local_conf ();
+
 	my $path = _lib_path ($local_conf -> {application_name}, $time);
 
 	_log ("Backing up libs on local server...");
-	_local_exec ("tar czvf $path lib/*");
+	_local_exec ("tar czf $path lib/*");
 
 	_log ("Lib backup complete");
 	return $path;
@@ -369,13 +424,17 @@ sub backup_master_libs {
 
 	my ($time) = @_;
 	$time ||= time;
-	my $master_conf = _read_master_conf ();
-	my $local_conf = _read_local_conf ();
+
 	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();
+
+	my $master_conf = _read_master_conf ();
+
 	my $path = $local_preconf -> {master_server} -> {path} . '/' . _lib_path ($local_conf -> {application_name}, $time);
 
 	_log ("Backing up libs on master server...");
-	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; tar czvf $path lib/*");
+	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; tar czf $path lib/*");
+	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; cp $path snapshots/latest-libs.tar.gz");
 
 	_log ("Lib backup complete");
 	return $path;
@@ -384,10 +443,32 @@ sub backup_master_libs {
 
 ################################################################################
 
+sub restore_master_libs {
+
+	my ($time) = @_;
+	$time ||= time;
+
+	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();
+
+	_log ("Deleting libs on master server...");
+	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; rm -rf libs/*");
+
+	_log ("Restoring libs on master server...");
+	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; tar xzfm snapshots/latest-libs.tar.gz");
+
+	_log ("Lib restore complete");
+	return $path;
+		
+}
+
+################################################################################
+
 sub _read_master_conf {
 
-	my $local_conf = _read_local_conf ();
 	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();
+
 	my $src = _master_exec ($local_preconf, 'cat ' . $local_preconf -> {master_server} -> {path} . "/lib/$$conf{application_name}/Config.pm");
 	undef $conf;
 	eval $src;
@@ -399,8 +480,9 @@ sub _read_master_conf {
 
 sub _read_master_preconf {
 
-	my $local_conf = _read_local_conf ();
 	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();
+
 	my $src = _master_exec ($local_preconf, 'cat ' . $local_preconf -> {master_server} -> {path} . "/conf/httpd.conf");
 	return _decrypt_preconf ($src);
 	
@@ -409,6 +491,8 @@ sub _read_master_preconf {
 ################################################################################
 
 sub _read_local_conf {
+	
+	_cd ();
 	
 	opendir (DIR, 'lib') || die "can't opendir lib: $!";
 	my ($appname) = grep {(-d "lib/$_") && ($_ !~ /\./) } readdir (DIR);
@@ -425,6 +509,7 @@ sub _decrypt_preconf {
 	my ($src) = @_;
 	$src =~ /\$preconf.*?\;/gsm;
 	$src = $&;
+	$src or die "ERROR: can't parse httpd.conf.\n";
 	eval $src;
 	$preconf -> {db_dsn} =~ /database=(\w+)/;
 	$preconf -> {db_name} = $1;
@@ -435,6 +520,9 @@ sub _decrypt_preconf {
 
 sub _read_local_preconf {
 
+	_cd ();
+
+	-f 'conf/httpd.conf' or die "ERROR: httpd.conf not found. Please, first chdir to the webapp directory.\n";
 	my $src = `cat conf/httpd.conf`;
 	return _decrypt_preconf ($src);
 	$src =~ /\$preconf.*?\;/gsm;
@@ -544,7 +632,7 @@ EOT
 		$tar -> extract ($tar -> list_files ());
 	}
 	else {
-		`tar xzvf $path --directory=$instpath/`;
+		`tar xzfm $path --directory=$instpath/`;
 	}	
 	print "ok\n";
 
@@ -693,27 +781,53 @@ Zanas::Install - create/update/backup/restore Zanas.pm based WEB applications.
 	
 	#perl -MZanas::Install -e create 
 
-		# create a new application
+		create a new application
 
-	#cd /path/to/app/
+	#cd /path/to/myapp/
 	#perl -MZanas::Install -e backup
+	
+		or
 
-		# create a backup (db dump and libs) in /path/to/app/snapshots/
+	#perl -MZanas::Install -e backup [myapp]
 
-	#cd /path/to/app/
+		create a backup (db dump and libs) in /path/to/app/snapshots/
+
+	#cd /path/to/myapp/
 	#perl -MZanas::Install -e restore 2004-1-1-0-0-0
 
-		# restore /path/to/app/snapshots/2004-1-1-0-0-0.tar.gz
+		or
 
-	#cd /path/to/app/
+	#perl -MZanas::Install -e restore [myapp] 2004-1-1-0-0-0
+
+		restore /path/to/myapp/snapshots/2004-1-1-0-0-0.tar.gz
+
+	#cd /path/to/myapp/
 	#perl -MZanas::Install -e backup_master 
+
+		or
+
+	#perl -MZanas::Install -e backup_master [myapp]
 
 		# create a backup on master server
 
-	#cd /path/to/app/
+	#cd /path/to/myapp/
 	#perl -MZanas::Install -e sync_down 
 
+		or
+
+	#perl -MZanas::Install -e sync_down [myapp]
+
 		# create a backup on master and then restore it on local server
+
+	#cd /path/to/myapp/
+	#perl -MZanas::Install -e sync_up
+
+		or
+
+	#perl -MZanas::Install -e sync_up [myapp]
+
+		# packs libs on local and then restore it on master server
+		
 
 =head1 DESCRIPTION
 
@@ -736,10 +850,11 @@ You can take the snapshot of the working application, store it locally and then 
 The snapshot consists of the database dump and all files in lib/ directory. 
 
 On the command C<backup> all of it is packed, named $year-$month-$day-$hour-$minute-$second.tar.gz and 
-then stored in C<snapshots> directory.
+then stored in C<snapshots> directory. This gzipped tar is then symlinked as C<latest.tar.gz>.
 
 On the command C<restore $year-$month-$day-$hour-$minute-$second> the old state returns.
-B<Caution!> You are responsible to backup the current state before restore the old one.
+Don't worry, the current state is automatically backed up before each restore. If no
+snapshot label is given then C<latest.tar.gz> is restored.
 
 =head2 Replication.
 
@@ -775,6 +890,49 @@ C<ssh_host eq 'localhost'> you can replicate the application up and down.
 
 The C<sync_down> command generates the application snapshot on the master, copies it
 to the local server and restores it here.
+
+The C<sync_up> command packs local libraries, copies it to the master
+server and unpacks it here.
+
+Note that only code goes up: production data will not be overriden. The database
+scheme shoud be synced with DBIx::ModelUpdate.
+
+=head1 HOW APPLICTATION SETTINGS ARE FETCHED
+
+Without [myapp] arg set Zanas::Install reads the settings from C<conf/httpd.conf>
+and lib/MYAPP/Config.pm files (as of current version, only lib/MYAPP/Config.pm matters, 
+this is to know the application libraries name).
+
+When [myapp] arg is given, Zanas::Install trys to guess where your application directory 
+is hidden and chdir there. To do so, C<apache> or C<httpd> is asked for the default conf
+file location, then this last is parsed for C<Include .../myapp/conf/httpd.conf>. If 
+httpd.conf is located somewhere else, Zanas::Install currently dies with an error message.
+
+=head1 [DON'T] PANIC SCENARIOS
+
+=head2 Wrong backup restored
+
+	#perl -MZanas::Install -e restore [myapp] 2004-1-1-0-0-0
+
+Oh, my! I've lost everything from the New Year!.. Hm, wait a minute... No, I really can undo it!
+
+	#perl -MZanas::Install -e restore [myapp]
+
+=head2 Old shit from master server
+
+	#perl -MZanas::Install -e sync_down [myapp]
+
+Oh, my! I've lost everything from the past release!.. Hm, wait a minute... No, I really can undo it!
+
+	#perl -MZanas::Install -e restore [myapp]
+
+=head2 Premature release
+
+	#perl -MZanas::Install -e sync_up [myapp]
+
+Oh, my! It's buggy! The master app will be broken! Hm, wait a minute... No, I really can undo it!
+
+	#perl -MZanas::Install -e restore_master_libs [myapp]
 
 =head1 SEE ALSO
 
