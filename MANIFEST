@@ -1,0 +1,6 @@
+Changes
+MANIFEST
+Makefile.PL
+lib/Zanas/Install.pm
+lib/Zanas/static/sample.tar.gz.pm
+t/use.t
