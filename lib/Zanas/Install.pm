@@ -586,11 +586,26 @@ sub _read_local_conf {
 
 sub _decrypt_preconf {
 	my ($src) = @_;
-	$src =~ /\$preconf.*?\;/gsm;
-	$src = $&;
-	$src or die "ERROR: can't parse httpd.conf.\n";
-	eval $src;
-	$preconf -> {db_dsn} =~ /database=(\w+)/;
+
+#print STDERR "\$src = $src\n";
+
+	my $preconf_src = '';
+
+	if ($src =~ /\$preconf.*?\;/gsm) {
+		$preconf_src = $&;
+	}
+	else {
+		$src =~ /use Zanas\:\:Loader[^\{]*(\{.*\})/gsm;
+		$preconf_src = $1; 
+		$preconf_src or die "ERROR: can't parse httpd.conf.\n";
+		$preconf_src = "\$preconf = $preconf_src";
+	}
+	
+#print STDERR "\$preconf_src = $preconf_src\n";
+	
+	eval $preconf_src;
+		
+	$preconf -> {db_dsn} =~ /database=(\w+)/ or die "Wrong \$preconf_src: $preconf_src\n";
 	$preconf -> {db_name} = $1;
 	return $preconf;
 }
