@@ -1,3 +1,10 @@
+0.52: 
+
+	- db password quoted;
+	- db password masked;
+	- static content (/docroot/i) is backed up/restored;
+	- sample application changed to public site/cm system;
+
 0.51: 
 
 	- sync_up documented;

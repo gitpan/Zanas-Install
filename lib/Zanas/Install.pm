@@ -12,8 +12,6 @@ use Data::Dumper;
 
 sub _cd {
 
-#print STDERR "_cd: \$ARGV[0] = $ARGV[0]\n";
-
 	$ARGV [0] =~ /^\[[\w\-]+\]$/ or return;
 	
 	my $appname = shift (@ARGV);
@@ -37,8 +35,6 @@ sub _cd {
 	$include_line =~ s{\"}{}g;
 	$include_line =~ s{\s}{}g;
 	
-#print STDERR "_cd: chdir $include_line\n";
-
 	chdir $include_line;
 
 	_local_exec ("pwd");
@@ -49,7 +45,10 @@ sub _cd {
 
 sub _local_exec {
 
-	print STDERR " {$_[0]";
+	my $line = $_[0];	
+	$line =~ s{\-p\".*?\"}{-p********};
+
+	print STDERR " {$line";
 
 	my $stdout = `$_[0]`;
 	
@@ -96,6 +95,18 @@ sub restore_local_libs {
 
 ################################################################################
 
+sub restore_local_i {
+	my ($path) = @_;
+	$path ||= $ARGV [0];
+	_log ("Removing i...");
+	_local_exec ("rm -rf docroot/i/*");
+	_log ("Unpacking $path...");
+	_local_exec ("tar xzfm $path");
+	_local_exec ("chmod -R a+rwx docroot/i/*");
+}
+
+################################################################################
+
 sub restore_local_db {
 
 	my ($path) = @_;	
@@ -108,7 +119,7 @@ sub restore_local_db {
 	$path =~ s{\.gz$}{};
 	
 	_log ("Feeding $path to MySQL...");
-	_local_exec ("mysql -u$$local_preconf{db_user} -p$$local_preconf{db_password} $$local_preconf{db_name} < $path");
+	_local_exec ("mysql -u$$local_preconf{db_user} -p\"$$local_preconf{db_password}\" $$local_preconf{db_name} < $path");
 
 	_log ("DB restore complete.");
 	
@@ -142,13 +153,18 @@ sub restore_local {
 	$time =~ s{master_}{};
 
 	my $local_preconf = _read_local_preconf ();
-	my $local_conf = _read_local_conf ();
+	my $local_conf    = _read_local_conf    ();
 
 	my $lib_path = 'lib/' . $local_conf -> {application_name} . '.' . $time . '.tar.gz';
 	restore_local_libs ($lib_path);
 	_log ("Removing $lib_path...");
 	_local_exec ("rm $lib_path");
 	
+	my $i_path = 'docroot/i.' . $time . '.tar.gz';
+	restore_local_i ($i_path);
+	_log ("Removing $i_path...");
+	_local_exec ("rm $i_path");
+
 	my $db_path = 'sql/' . $local_preconf -> {db_name} . '.' . $time . '.sql.gz';
 	restore_local_db ($db_path);
 	$db_path =~ s{\.gz$}{};
@@ -181,6 +197,17 @@ sub _lib_path {
 
 ################################################################################
 
+sub _i_path {
+	my ($time) = @_;
+	$time ||= time;
+	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime ($time);
+	$mon ++;
+	$year += 1900;
+	return "docroot/i.$year-$mon-$mday-$hour-$min-$sec.tar.gz";
+}
+
+################################################################################
+
 sub _snapshot_path {
 	my ($time) = @_;
 	$time ||= time;
@@ -203,12 +230,13 @@ sub backup_local {
 	my ($time) = @_;
 	$time ||= time;
 	_log ("Backing up application on local server...");
-	my $db_path = backup_local_db ($time);
+	my $db_path   = backup_local_db   ($time);
 	my $libs_path = backup_local_libs ($time);
-	my $path = _snapshot_path ($time);
+	my $i_path    = backup_local_i    ($time);
+	my $path      = _snapshot_path    ($time);
 	
 	_log ("Creating $path...");
-	_local_exec ("tar czf $path $db_path $libs_path");
+	_local_exec ("tar czf $path $db_path $libs_path $i_path");
 
 	_log ("Creating symlink snapshots/latest.tar.gz...");
 	_local_exec ("rm snapshots/latest.tar.gz*");
@@ -220,6 +248,9 @@ sub backup_local {
 	_log ("Removing $libs_path...");
 	_local_exec ("rm $libs_path");
 	
+	_log ("Removing $i_path...");
+	_local_exec ("rm $i_path");
+
 	_log ("Backup complete");
 	return $path;
 	
@@ -337,11 +368,14 @@ sub backup_master {
 	my $libs_path = backup_master_libs ($time);
 	$libs_path =~ s{$master_path\/}{};	
 	
+	my $i_path = backup_master_i ($time);
+	$i_path =~ s{$master_path\/}{};	
+
 	my $path = _snapshot_path ($time);
 	$path =~ s{snapshots\/}{snapshots\/master_};
 	
 	_log ("Creating $path...");
-	_master_exec ($local_preconf, "cd $master_path; tar czf $master_path/$path $db_path $libs_path");
+	_master_exec ($local_preconf, "cd $master_path; tar czf $master_path/$path $db_path $libs_path $i_path");
 	
 	_log ("Removing $db_path...");
 	_master_exec ($local_preconf, "cd $master_path; rm $db_path");
@@ -349,6 +383,9 @@ sub backup_master {
 	_log ("Removing $libs_path...");
 	_master_exec ($local_preconf, "cd $master_path; rm $libs_path");
 	
+	_log ("Removing $i_path...");
+	_master_exec ($local_preconf, "cd $master_path; rm $i_path");
+
 	_log ("Backup complete");
 	
 	return $path;
@@ -366,7 +403,7 @@ sub backup_local_db {
 	_log ("Backing up db $$local_preconf{db_name} on local server...");
 	
 	_log ("Creating $path...");
-	_local_exec ("mysqldump --add-drop-table -u$$local_preconf{db_user} -p$$local_preconf{db_password} $$local_preconf{db_name} > $path");
+	_local_exec ("mysqldump --add-drop-table -u$$local_preconf{db_user} -p\"$$local_preconf{db_password}\" $$local_preconf{db_name} > $path");
 	
 	_log ("Gzipping $path...");
 	_local_exec ("gzip $path");
@@ -390,7 +427,7 @@ sub backup_master_db {
 	my $path = $local_preconf -> {master_server} -> {path} . '/' . _db_path ($local_preconf -> {db_name}, $time);
 	_log ("Backing up db $$master_preconf{db_name} on master server...");
 	_log ("Creating $path...");
-	_master_exec ($local_preconf, "mysqldump --add-drop-table -u$$master_preconf{db_user} -p$$master_preconf{db_password} $$master_preconf{db_name} > $path");
+	_master_exec ($local_preconf, "mysqldump --add-drop-table -u$$master_preconf{db_user} -p\"$$master_preconf{db_password}\" $$master_preconf{db_name} > $path");
 	_log ("Gzipping $path...");
 	_master_exec ($local_preconf, "gzip $path");
 	_log ("DB backup complete");
@@ -420,6 +457,26 @@ sub backup_local_libs {
 
 ################################################################################
 
+sub backup_local_i {
+
+	my ($time) = @_;
+	$time ||= time;
+
+	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();
+
+	my $path = _i_path ($time);
+
+	_log ("Backing up libs on local server...");
+	_local_exec ("tar czf $path docroot/i/*");
+
+	_log ("I backup complete");
+	return $path;
+		
+}
+
+################################################################################
+
 sub backup_master_libs {
 
 	my ($time) = @_;
@@ -437,6 +494,28 @@ sub backup_master_libs {
 	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; cp $path snapshots/latest-libs.tar.gz");
 
 	_log ("Lib backup complete");
+	return $path;
+		
+}
+
+################################################################################
+
+sub backup_master_i {
+
+	my ($time) = @_;
+	$time ||= time;
+
+	my $local_preconf = _read_local_preconf ();
+	my $local_conf = _read_local_conf ();
+
+	my $master_conf = _read_master_conf ();
+
+	my $path = $local_preconf -> {master_server} -> {path} . '/' . _i_path ($time);
+
+	_log ("Backing up i on master server...");
+	_master_exec ($local_preconf, 'cd ' . $local_preconf -> {master_server} -> {path} . "; tar czf $path docroot/i/*");
+
+	_log ("I backup complete");
 	return $path;
 		
 }
@@ -770,7 +849,7 @@ sub random_password {
 
 package Zanas::Install;
 
-$VERSION = 0.5;
+$VERSION = 0.52;
 
 =head1 NAME
 
