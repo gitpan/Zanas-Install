@@ -1,3 +1,18 @@
+0.55: 
+
+	- $local_preconf -> {static} added;
+	- $local_preconf -> {skip_tables} added;
+	- timings added;
+	- small typo in logging fixed;
+
+
+0.54: 
+
+	- fixed broken symlink latest.tar.gz;
+	- fixed timestamp format (%02d);
+	- added mysql table type is sweeped off;
+	- 'cleanup' command added;
+	
 0.53: 
 
 	- fixed for compatibility with Zanas::Loader;

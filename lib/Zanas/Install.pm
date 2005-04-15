@@ -50,14 +50,16 @@ sub _local_exec {
 
 	print STDERR " {$line";
 
+	my $time = time;
 	my $stdout = `$_[0]`;
+	my $timing = ', ' . (time - $time) . ' s elapsed.';
 	
 	if ($_[0] !~ /cat / && $stdout =~ /./) {
 		$stdout =~ s{^}{  }gsm;
-		print STDERR "\n$stdout }\n";
+		print STDERR "\n$stdout }$timing\n";
 	}
 	else {
-		print STDERR "}\n";
+		print STDERR "}$timing\n";
 	}
 
 	return $stdout;
@@ -96,13 +98,18 @@ sub restore_local_libs {
 ################################################################################
 
 sub restore_local_i {
+
 	my ($path) = @_;
 	$path ||= $ARGV [0];
+
+	my $local_preconf = _read_local_preconf ();
+
 	_log ("Removing i...");
 	_local_exec ("rm -rf docroot/i/*");
 	_log ("Unpacking $path...");
 	_local_exec ("tar xzfm $path");
 	_local_exec ("chmod -R a+rwx docroot/i/*");
+	
 }
 
 ################################################################################
@@ -160,10 +167,20 @@ sub restore_local {
 	_log ("Removing $lib_path...");
 	_local_exec ("rm $lib_path");
 	
-	my $i_path = 'docroot/i.' . $time . '.tar.gz';
-	restore_local_i ($i_path);
-	_log ("Removing $i_path...");
-	_local_exec ("rm $i_path");
+	if ($local_preconf -> {master_server} -> {static} eq 'none') {
+		_log ("RESTORING STATIC FILES ON LOCAL SERVER IS SKIPPED.");
+	}
+	elsif ($local_preconf -> {master_server} -> {static} eq 'rsync') {
+		my $s = $local_preconf -> {master_server};
+		_log ("Synchronizing static files...");
+		_local_exec ("rsync -r -essh $$s{user}\@$$s{host}:$$s{path}/docroot/i/* docroot/i/");
+	} 
+	else {
+		my $i_path = 'docroot/i.' . $time . '.tar.gz';
+		restore_local_i ($i_path);
+		_log ("Removing $i_path...");
+		_local_exec ("rm $i_path");
+	}
 
 	my $db_path = 'sql/' . $local_preconf -> {db_name} . '.' . $time . '.sql.gz';
 	restore_local_db ($db_path);
@@ -175,13 +192,27 @@ sub restore_local {
 
 ################################################################################
 
+sub timestamp {
+
+	$time ||= time;
+
+	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime ($time);
+	$mon ++;
+	$year += 1900;
+
+	return sprintf ("%4d-%02d-%02d-%02d-%02d-%02d", $year, $mon, $mday, $hour, $min, $sec);
+
+}
+
+################################################################################
+
 sub _db_path {
 	my ($db_name, $time) = @_;
 	$time ||= time;
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime ($time);
 	$mon ++;
 	$year += 1900;
-	return "sql/$db_name.$year-$mon-$mday-$hour-$min-$sec.sql";
+	return "sql/$db_name." . timestamp () . ".sql";
 }
 
 ################################################################################
@@ -192,7 +223,7 @@ sub _lib_path {
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime ($time);
 	$mon ++;
 	$year += 1900;
-	return "lib/$application_name.$year-$mon-$mday-$hour-$min-$sec.tar.gz";
+	return "lib/$application_name." . timestamp () . ".tar.gz";
 }
 
 ################################################################################
@@ -203,7 +234,7 @@ sub _i_path {
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime ($time);
 	$mon ++;
 	$year += 1900;
-	return "docroot/i.$year-$mon-$mday-$hour-$min-$sec.tar.gz";
+	return "docroot/i." . timestamp () . ".tar.gz";
 }
 
 ################################################################################
@@ -214,13 +245,28 @@ sub _snapshot_path {
 	my ($sec, $min, $hour, $mday, $mon, $year, $wday, $yday) = gmtime ($time);
 	$mon ++;
 	$year += 1900;
-	return "snapshots/$year-$mon-$mday-$hour-$min-$sec.tar.gz";
+	return "snapshots/" . timestamp () . ".tar.gz";
 }
 
 ################################################################################
 
 sub backup {
 	backup_local (@_);
+}
+
+
+
+
+################################################################################
+
+sub cleanup {
+
+	_log ("Cleaning up logs...");
+	_local_exec ("find -path '*/logs/*' -exec rm {} \\;");
+
+	_log ("Cleaning up snapshots...");
+	_local_exec ("find -path '*/snapshots/*' -exec rm {} \\;");
+
 }
 
 ################################################################################
@@ -234,13 +280,15 @@ sub backup_local {
 	my $libs_path = backup_local_libs ($time);
 	my $i_path    = backup_local_i    ($time);
 	my $path      = _snapshot_path    ($time);
+	my $ln_path   = $path;
+	$ln_path =~ s{^snapshots/}{};
 	
 	_log ("Creating $path...");
 	_local_exec ("tar czf $path $db_path $libs_path $i_path");
 
 	_log ("Creating symlink snapshots/latest.tar.gz...");
 	_local_exec ("rm snapshots/latest.tar.gz*");
-	_local_exec ("ln -s $path snapshots/latest.tar.gz");
+	_local_exec ("ln -s $ln_path snapshots/latest.tar.gz");
 	
 	_log ("Removing $db_path...");
 	_local_exec ("rm $db_path");
@@ -248,8 +296,10 @@ sub backup_local {
 	_log ("Removing $libs_path...");
 	_local_exec ("rm $libs_path");
 	
-	_log ("Removing $i_path...");
-	_local_exec ("rm $i_path");
+	if ($i_path) {
+		_log ("Removing $i_path...");
+		_local_exec ("rm $i_path");
+	}
 
 	_log ("Backup complete");
 	return $path;
@@ -259,6 +309,8 @@ sub backup_local {
 ################################################################################
 
 sub sync_down {
+
+	my $time = time;
 
 	my $snapshot_path = backup_master ();
 	
@@ -270,7 +322,9 @@ sub sync_down {
 	
 	restore_local ($snapshot_path);
 
-	_log ("Sync complete");
+	my $timing = ', ' . (time - $time) . ' s elapsed.';
+
+	_log ("Sync complete$timing\n");
 
 }
 
@@ -383,9 +437,11 @@ sub backup_master {
 	_log ("Removing $libs_path...");
 	_master_exec ($local_preconf, "cd $master_path; rm $libs_path");
 	
-	_log ("Removing $i_path...");
-	_master_exec ($local_preconf, "cd $master_path; rm $i_path");
-
+	if ($i_path) {
+		_log ("Removing $i_path...");
+		_master_exec ($local_preconf, "cd $master_path; rm $i_path");
+	}
+	
 	_log ("Backup complete");
 	
 	return $path;
@@ -402,9 +458,15 @@ sub backup_local_db {
 	my $path = _db_path ($local_preconf -> {db_name}, $time);
 	_log ("Backing up db $$local_preconf{db_name} on local server...");
 	
-	_log ("Creating $path...");
-	_local_exec ("mysqldump --add-drop-table -u$$local_preconf{db_user} -p\"$$local_preconf{db_password}\" $$local_preconf{db_name} > $path");
+	_log ("Creating ${path}_...");
+	_local_exec ("mysqldump --add-drop-table -u$$local_preconf{db_user} -p\"$$local_preconf{db_password}\" $$local_preconf{db_name} > ${path}_");
 	
+	_log ("Cleaning up: ${path}_ -> $path...");
+	_local_exec ("cat ${path}_ | perl -ne \"s{ TYPE=\\w+}{}; print\" > $path");
+	
+	_log ("Deleting ${path}_...");
+	_local_exec ("rm ${path}_");
+
 	_log ("Gzipping $path...");
 	_local_exec ("gzip $path");
 	
@@ -426,10 +488,26 @@ sub backup_master_db {
 	my $master_preconf = _read_master_preconf ();	
 	my $path = $local_preconf -> {master_server} -> {path} . '/' . _db_path ($local_preconf -> {db_name}, $time);
 	_log ("Backing up db $$master_preconf{db_name} on master server...");
-	_log ("Creating $path...");
-	_master_exec ($local_preconf, "mysqldump --add-drop-table -u$$master_preconf{db_user} -p\"$$master_preconf{db_password}\" $$master_preconf{db_name} > $path");
+	
+	_log ("Creating ${path}_...");
+	_master_exec ($local_preconf, "mysqldump --add-drop-table -u$$master_preconf{db_user} -p\"$$master_preconf{db_password}\" $$master_preconf{db_name} > ${path}_");
+
+	my $table_filter = '';
+	if (ref $local_preconf -> {master_server} -> {skip_tables} eq ARRAY) {			
+		foreach my $table (@{$local_preconf -> {master_server} -> {skip_tables}}) {
+			$table_filter .= qq{| grep -v "INSERT INTO $table"};
+		}	
+	}
+
+	_log ("Cleaning up: ${path}_ -> $path...");
+	_master_exec ($local_preconf, "cat ${path}_ $table_filter | perl -ne \"s{ TYPE=\\w+}{}; print\" > $path");
+
+	_log ("Deleting ${path}_...");
+	_master_exec ($local_preconf, "rm ${path}_");
+		
 	_log ("Gzipping $path...");
 	_master_exec ($local_preconf, "gzip $path");
+	
 	_log ("DB backup complete");
 	return "$path.gz";
 		
@@ -464,10 +542,15 @@ sub backup_local_i {
 
 	my $local_preconf = _read_local_preconf ();
 	my $local_conf = _read_local_conf ();
+		
+	if ($preconf -> {master_server} -> {static} eq 'none' or $preconf -> {master_server} -> {static} eq 'rsync') {
+		_log ("BACKING UP STATIC FILES ON LOCAL SERVER IS SKIPPED.");
+		return '';
+	}
 
 	my $path = _i_path ($time);
 
-	_log ("Backing up libs on local server...");
+	_log ("Backing up static files on local server...");
 	_local_exec ("tar czf $path docroot/i/*");
 
 	_log ("I backup complete");
@@ -507,6 +590,11 @@ sub backup_master_i {
 
 	my $local_preconf = _read_local_preconf ();
 	my $local_conf = _read_local_conf ();
+
+	if ($preconf -> {master_server} -> {static} eq 'none' or $preconf -> {master_server} -> {static} eq 'rsync') {
+		_log ("BACKING UP STATIC FILES ON MASTER SERVER IS SKIPPED.");
+		return '';
+	}
 
 	my $master_conf = _read_master_conf ();
 
@@ -605,9 +693,15 @@ sub _decrypt_preconf {
 	
 	eval $preconf_src;
 		
-	$preconf -> {db_dsn} =~ /database=(\w+)/ or die "Wrong \$preconf_src: $preconf_src\n";
+	$preconf -> {db_dsn}  =~ /database=(\w+)/ or die "Wrong \$preconf_src: $preconf_src\n";
 	$preconf -> {db_name} = $1;
+	
+	if ($preconf -> {master_server}) {
+		$preconf -> {master_server} -> {static} ||= 'tgz';
+	}	
+	
 	return $preconf;
+	
 }
 
 ################################################################################
@@ -619,7 +713,6 @@ sub _read_local_preconf {
 	-f 'conf/httpd.conf' or die "ERROR: httpd.conf not found. Please, first chdir to the webapp directory.\n";
 	my $src = `cat conf/httpd.conf`;
 	return _decrypt_preconf ($src);
-	$src =~ /\$preconf.*?\;/gsm;
 	
 }
 
@@ -864,7 +957,7 @@ sub random_password {
 
 package Zanas::Install;
 
-$VERSION = 0.52;
+$VERSION = 0.55;
 
 =head1 NAME
 
