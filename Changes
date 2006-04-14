@@ -1,3 +1,16 @@
+	- $conf caching;
+	- $preconf -> {master_server} -> {skip_libs} introduced;
+
+0.6:
+
+	- subversion support added (by PASHKA!!!): 
+	    create - initial sources can be obtained from svn repository
+	    svn_import - importing project to svn repository
+	    svn_commit - commit changes, add and delete files automatically
+	    svn_update = svn update
+	    
+	- SAMPLE cutted down (by do)
+	    
 0.55: 
 
 	- $local_preconf -> {static} added;
